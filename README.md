@@ -24,45 +24,53 @@ Excel File Processor is a web application that allows users to upload multiple E
 - Rust and Cargo installed on your machine.
 - Node.js and npm installed for frontend dependencies.
 
-### Installation
+# Rust Project Setup Guide
 
-1. **Clone the repository**:
-    ```sh
-    git clone https://github.com/your-username/excel-file-processor.git
-    cd excel-file-processor
-    ```
+## Step 1: Download and Install Rust Rover
+1. **Download Rust Rover**:
+   * Go to the **JetBrains Rust Rover download page**
+   * Download and install the appropriate version for your operating system
 
-2. **Backend Setup**:
-    ```sh
-    cargo build
-    cargo run
-    ```
+## Step 2: Download and Install LLVM
+1. **Download LLVM**:
+   * Go to the **LLVM 1.8.1 release page**
+   * Download the appropriate version for your operating system
+   * Follow the installation instructions provided on the release page
 
-3. **Frontend Setup**:
-    - Open the `index.html` file in your browser.
+## Step 3: Set Up a Rust Project in Rust Rover
+1. **Open Rust Rover**:
+   * Launch Rust Rover
 
-### Usage
+2. **Create a New Rust Project**:
+   * Go to `File` > `New` > `Project`
+   * Select `Rust` and follow the prompts to create a new Rust project
+   * When prompted, download and install `rustup` and its linker as recommended
 
-1. **Start the Server**:
-    ```sh
-    cargo run
-    ```
+## Step 4: Copy Backend Files
+1. **Copy Cargo.toml**:
+   * Open the `Cargo.toml` file in your new Rust project
+   * Replace the contents starting from `[dependencies]` to the end with the provided `Cargo.toml` content
 
-2. **Open the Application**:
-    - Open `index.html` in your browser.
-    - Upload Excel files, folders, or zip archives.
-    - Enter the text to find and the text to replace.
-    - Click on "Process Files" to perform the find-and-replace operation.
-    - Download the processed files as a zip archive.
+2. **Copy main.rs**:
+   * Open the `src/main.rs` file in your new Rust project
+   * Replace the contents with the provided `main.rs` content
 
-## Project Structure
-    excel-file-processor/
-    ├── Cargo.toml
-    ├── src/
-    │   ├── main.rs
-    ├── index.html
-    ├── README.md
+## Step 5: Run the Backend Server
+1. **Build and Run the Project**:
+   * In Rust Rover, click on the `Run` button or use the terminal to run `cargo run`
+   * This will download the required dependencies, build the project, and start the backend server locally
 
+## Step 6: Open the Frontend
+1. **Open index.html**:
+   * Navigate to the `frontend` directory
+   * Open `index.html` in your web browser
+
+## Step 7: Process Excel Files
+1. **Use the Frontend**:
+   * Follow the instructions on the frontend to upload Excel files
+   * Enter find and replace strings
+   * Process the files
+   * The backend server will handle the file processing and return the processed files as a downloadable ZIP archive
 
 ## Contributing
 
