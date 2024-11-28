@@ -14,6 +14,9 @@ Excel File Processor is a web application that allows users to upload multiple E
 - **Backend**: Rust with Actix-web
 - **Libraries**: JSZip, SheetJS, calamine, rust_xlsxwriter
 
+![00](https://github.com/user-attachments/assets/1f62069e-8f11-4e62-8fc6-eb3be5a91478)
+![01](https://github.com/user-attachments/assets/f37ad217-bf39-451c-937b-96cb6e7903a7)
+
 ## Getting Started
 
 ### Prerequisites
