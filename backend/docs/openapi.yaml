@@ -1,0 +1,57 @@
+openapi: 3.0.0
+info:
+  title: Excel File Processor API
+  description: API for processing Excel files with find and replace functionality.
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:5000
+    description: Local server
+
+paths:
+  /process-excel:
+    post:
+      summary: Process Excel files
+      description: Upload Excel files and perform find and replace operations.
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                find:
+                  type: string
+                  description: The string to find in the Excel files.
+                replace:
+                  type: string
+                  description: The string to replace with in the Excel files.
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: The Excel files to be processed.
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+                description: Zip file containing the processed Excel files.
+        '400':
+          description: Bad request
+        '500':
+          description: Internal server error
+
+components:
+  schemas:
+    ProcessingResult:
+      type: object
+      properties:
+        replaced_count:
+          type: integer
+          description: The number of replacements made.
+        filename:
+          type: string
+          description: The name of the processed file.
