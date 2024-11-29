@@ -1,4 +1,4 @@
-use actix_web::{web, App, HttpResponse, HttpServer, Result};
+use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Result};
 use actix_multipart::Multipart;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,8 @@ use actix_cors::Cors;
 use log::info;
 use env_logger;
 use num_cpus;
+use swagger_ui::{Assets, Config, Spec, swagger_spec_file};
+use mime_guess::from_path;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessingResult {
@@ -248,6 +250,68 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
         .body(zip_buffer))
 }
 
+async fn swagger_ui_handler(req: HttpRequest) -> HttpResponse {
+    let path = req.match_info().get("tail").unwrap_or("");
+    match path {
+        "" => {
+            let _spec: Spec = swagger_spec_file!("../docs/openapi.yaml");
+            let _config = Config {
+                url: "/api-docs/openapi.yaml".to_string(),
+                ..Default::default()
+            };
+            let html = format!(
+                r#"
+                <!DOCTYPE html>
+                <html lang="en">
+                  <head>
+                    <meta charset="UTF-8">
+                    <title>Swagger UI</title>
+                    <link rel="stylesheet" type="text/css" href="/swagger-ui/swagger-ui.css" />
+                    <link rel="icon" type="image/png" href="/swagger-ui/favicon-32x32.png" sizes="32x32" />
+                    <link rel="icon" type="image/png" href="/swagger-ui/favicon-16x16.png" sizes="16x16" />
+                  </head>
+                  <body>
+                    <div id="swagger-ui"></div>
+                    <script src="/swagger-ui/swagger-ui-bundle.js"></script>
+                    <script src="/swagger-ui/swagger-ui-standalone-preset.js"></script>
+                    <script>
+                    window.onload = function() {{
+                      const ui = SwaggerUIBundle({{
+                        url: "/docs/openapi.yaml",
+                        dom_id: '#swagger-ui',
+                        deepLinking: true,
+                        presets: [
+                          SwaggerUIBundle.presets.apis,
+                          SwaggerUIStandalonePreset
+                        ],
+                        plugins: [
+                          SwaggerUIBundle.plugins.DownloadUrl
+                        ],
+                        layout: "StandaloneLayout"
+                      }})
+                      window.ui = ui
+                    }}
+                  </script>
+                  </body>
+                </html>
+                "#
+            );
+            HttpResponse::Ok()
+                .content_type("text/html")
+                .body(html)
+        }
+        _ => {
+            if let Some(content) = Assets::get(path) {
+                HttpResponse::Ok()
+                    .content_type(from_path(path).first_or_octet_stream())
+                    .body(content)
+            } else {
+                HttpResponse::NotFound().finish()
+            }
+        }
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
@@ -256,6 +320,7 @@ async fn main() -> std::io::Result<()> {
     let num_workers = num_cpus::get();
 
     println!("Server starting at http://{}:{}", host, port);
+    println!("Access Swagger UI at http://{}:{}/swagger-ui/", host, port);
 
     HttpServer::new(|| {
         App::new()
@@ -267,6 +332,15 @@ async fn main() -> std::io::Result<()> {
                 web::resource("/process-excel")
                     .route(web::post().to(process_excel))
             )
+            .service(
+                web::resource("/swagger-ui/{tail:.*}")
+                    .route(web::get().to(swagger_ui_handler))
+            )
+            .route("/docs/openapi.yaml", web::get().to(|| async {
+                HttpResponse::Ok()
+                    .content_type("application/yaml")
+                    .body(include_str!("../docs/openapi.yaml"))
+            }))
     })
         .workers(num_workers)
         .backlog(1024)
