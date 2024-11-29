@@ -1,5 +1,5 @@
 [package]
-name = "untitled"
+name = "excel-file-processing-service"
 version = "0.1.0"
 edition = "2021"
 
@@ -17,3 +17,4 @@ actix-cors = "0.7.0"
 log = "0.4.22"
 env_logger = "0.11.5"
 num_cpus = "1.13.0"
+swagger-ui = "0.1.5"

@@ -22,6 +22,59 @@ struct ProcessingResult {
     filename: String,
 }
 
+// Structure to represent a text segment with its coloring information
+#[derive(Clone)]
+struct TextSegment {
+    text: String,
+    is_replaced: bool,
+}
+
+// Function to split a string with the replaced part
+fn split_and_replace(original: &str, find: &str, replace: &str) -> Vec<TextSegment> {
+    let mut result = Vec::new();
+    let mut current = original;
+    let mut found_replacement = false;
+
+    while let Some(pos) = current.find(find) {
+        // Add the part before the find string (if any)
+        if pos > 0 {
+            result.push(TextSegment {
+                text: current[..pos].to_string(),
+                is_replaced: false
+            });
+        }
+
+        // Add the replaced part
+        result.push(TextSegment {
+            text: replace.to_string(),
+            is_replaced: true
+        });
+
+        found_replacement = true;
+
+        // Move to the part after the find string
+        current = &current[pos + find.len()..];
+    }
+
+    // Add any remaining part
+    if !current.is_empty() {
+        result.push(TextSegment {
+            text: current.to_string(),
+            is_replaced: false
+        });
+    }
+
+    // If no replacements were made, return the original string
+    if !found_replacement {
+        result = vec![TextSegment {
+            text: original.to_string(),
+            is_replaced: false
+        }];
+    }
+
+    result
+}
+
 async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
     let temp_dir = TempDir::new().map_err(actix_web::error::ErrorInternalServerError)?;
     let mut files_to_process: Vec<(PathBuf, String)> = Vec::new();
@@ -104,44 +157,61 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
             let mut total_replacements = 0;
 
             // Create formats
-            let red_format = Format::new().set_font_color(Color::Red);
+            let default_format = Format::new();
+            let red_format = Format::new()
+                .set_font_color(Color::Red)
+                .set_bold();
 
             // Process each cell in the first sheet
             for (row_idx, row) in sheet.rows().enumerate() {
                 for (col_idx, cell) in row.iter().enumerate() {
-                    if let DataType::String(s) = cell {
-                        if s.contains(&find_text) {
-                            total_replacements += 1;
-                            let modified_text = s.replace(&find_text, &replace_text);
+                    match cell {
+                        DataType::String(s) => {
+                            if s.contains(&find_text) {
+                                total_replacements += 1;
 
-                            worksheet.write_string(row_idx as u32, col_idx as u16, &modified_text)
+                                // Split the string into parts to be colored
+                                let parts = split_and_replace(s, &find_text, &replace_text);
+
+                                // For cells with replacements, create a rich text format
+                                let mut rich_text: Vec<(&Format, &str)> = Vec::new();
+                                for part in &parts {
+                                    let format = if part.is_replaced {
+                                        &red_format
+                                    } else {
+                                        &default_format
+                                    };
+
+                                    rich_text.push((format, part.text.as_str()));
+                                }
+
+                                // Write the rich text to the cell
+                                worksheet.write_rich_string(
+                                    row_idx as u32,
+                                    col_idx as u16,
+                                    &rich_text
+                                ).map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+                            } else {
+                                worksheet.write_string(row_idx as u32, col_idx as u16, s.trim())
+                                    .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+                            }
+                        },
+                        DataType::Float(n) => {
+                            worksheet.write_number(row_idx as u32, col_idx as u16, *n)
                                 .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-
-                            // Create a red format for the entire cell
-                            let red_format = Format::new()
-                                .set_font_color(Color::Red)
-                                .set_bold();
-
-                            // Rewrite the entire cell with red formatting
-                            worksheet.write_string_with_format(
-                                row_idx as u32,
-                                col_idx as u16,
-                                &modified_text,
-                                &red_format
-                            ).map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-                        } else {
-                            worksheet.write_string(row_idx as u32, col_idx as u16, s.trim())
+                        },
+                        DataType::Int(n) => {
+                            worksheet.write_number(row_idx as u32, col_idx as u16, *n as f64)
+                                .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+                        },
+                        DataType::DateTime(dt) => {
+                            worksheet.write_string(row_idx as u32, col_idx as u16, &dt.to_string())
+                                .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+                        },
+                        _ => {
+                            worksheet.write_string(row_idx as u32, col_idx as u16, "")
                                 .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
                         }
-                    } else {
-                        let cell_str = match cell {
-                            DataType::Float(n) => n.to_string(),
-                            DataType::Int(n) => n.to_string(),
-                            DataType::DateTime(dt) => dt.to_string(),
-                            _ => String::new(),
-                        };
-                        worksheet.write_string(row_idx as u32, col_idx as u16, &cell_str)
-                            .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
                     }
                 }
             }

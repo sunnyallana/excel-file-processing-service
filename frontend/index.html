@@ -429,48 +429,48 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script>
         let uploadedFiles = new Set();
-
+    
         // Handle file input changes
         document.getElementById('fileInput').addEventListener('change', handleFileSelect);
         document.getElementById('folderInput').addEventListener('change', handleFolderSelect);
         document.getElementById('zipInput').addEventListener('change', handleZipSelect);
-
-      // Handle normal file selection (Excel files)
+    
+        // Handle normal file selection (Excel files)
         function handleFileSelect(event) {
             const files = Array.from(event.target.files);
-
+    
             let validFiles = files.filter(file => {
                 const ext = file.name.toLowerCase().split('.').pop();
                 return (ext === 'xls' || ext === 'xlsx');
             });
-
+    
             validFiles.forEach(file => {
                 uploadedFiles.add(file);
             });
-
+    
             updateFilesList();
             updateStats();
             event.target.value = '';
         }
-
+    
         // Handle folder selection
         function handleFolderSelect(event) {
             const files = Array.from(event.target.files);
-
+    
             let validFiles = files.filter(file => {
                 const ext = file.name.toLowerCase().split('.').pop();
                 return (ext === 'xls' || ext === 'xlsx');
             });
-
+    
             validFiles.forEach(file => {
                 uploadedFiles.add(file);
             });
-
+    
             updateFilesList();
             updateStats();
             event.target.value = '';
         }
-
+    
         // Handle zip file selection using JSZip
         function handleZipSelect(event) {
             const file = event.target.files[0];
@@ -499,7 +499,7 @@
             }
             event.target.value = '';
         }
-
+    
         // Update files list UI
         function updateFilesList() {
             const filesList = document.getElementById('filesList');
@@ -514,14 +514,14 @@
                 filesList.appendChild(fileItem);
             });
         }
-
+    
         // Delete a file from the list
         function deleteFile(fileName) {
             uploadedFiles = new Set([...uploadedFiles].filter(file => file.name !== fileName));
             updateFilesList();
             updateStats();
         }
-
+    
         // Update stats (total files and total size)
         function updateStats() {
             const totalFiles = uploadedFiles.size;
@@ -529,45 +529,45 @@
             document.getElementById('totalFiles').innerText = totalFiles;
             document.getElementById('totalSize').innerText = (totalSize / (1024 * 1024)).toFixed(2) + ' MB';
         }
-
+    
         function showLoading(show) {
             const loadingElement = document.getElementById('loading');
             loadingElement.style.display = show ? 'block' : 'none';
         }
-
+    
         async function processFiles() {
             const findText = document.getElementById('findInput').value;
             const replaceText = document.getElementById('replaceInput').value;
-
+    
             if (uploadedFiles.size === 0) {
                 alert('Please add files to process');
                 return;
             }
-
+    
             showLoading(true);
-
+    
             const formData = new FormData();
             uploadedFiles.forEach(file => {
                 formData.append('files[]', file);
             });
-
+    
             if (findText && replaceText) {
                 formData.append('find', findText);
                 formData.append('replace', replaceText);
             }
-
+    
             try {
                 const response = await fetch('http://127.0.0.1:5000/process-excel', {
                     method: 'POST',
                     body: formData,
                 });
-
+    
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-
+    
                 const result = await response.blob();
-
+    
                 // Create a unique filename with timestamp
                 const timestamp = new Date().toLocaleDateString('en-US', {
                     month: '2-digit',
@@ -578,44 +578,59 @@
                     second: '2-digit',
                     hour12: false
                 }).replace(/[/:\s]/g, '');
-
+    
                 const url = URL.createObjectURL(result);
                 const link = document.createElement('a');
                 link.href = url;
                 link.download = `firstsheet${timestamp}.zip`;
-
+    
                 // Trigger download
                 document.body.appendChild(link);
                 link.click();
-
+    
                 // Clean up
                 document.body.removeChild(link);
                 URL.revokeObjectURL(url);
-
+    
                 showLoading(false);
-
+    
                 // Optional: Show success message
                 alert('Files processed and downloaded successfully!');
-
+    
+                // Clear input fields and file list
+                resetForm();
+    
             } catch (error) {
                 console.error('Error processing files:', error);
                 alert('An error occurred during file processing');
                 showLoading(false);
             }
         }
-
+    
+        // Function to reset the form
+        function resetForm() {
+            document.getElementById('findInput').value = '';
+            document.getElementById('replaceInput').value = '';
+            uploadedFiles.clear();
+            updateFilesList();
+            updateStats();
+            document.getElementById('matchCountSection').style.display = 'none';
+            document.getElementById('processBtn').disabled = true;
+            document.getElementById('processBtn').classList.remove('has-matches');
+        }
+    
         // Enhance match counting function to be more precise
         async function countMatchesInFiles() {
             const findText = document.getElementById('findInput').value;
             let totalMatches = 0;
-
+    
             // Check if findText is entered
             if (!findText) {
                 document.getElementById('matchCountSection').style.display = 'none';
                 document.getElementById('processBtn').disabled = true;
                 return;
             }
-
+    
             // Create a promise to aggregate matches across all files
             const matchPromises = Array.from(uploadedFiles).map(file => {
                 return new Promise((resolve, reject) => {
@@ -625,12 +640,12 @@
                             const data = e.target.result;
                             const workbook = XLSX.read(data, { type: 'binary' });
                             let fileMatches = 0;
-
+    
                             // Process only the first sheet
                             const sheetName = workbook.SheetNames[0];
                             const worksheet = workbook.Sheets[sheetName];
                             const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-
+    
                             // Count matches
                             jsonData.forEach(row => {
                                 row.forEach(cell => {
@@ -640,7 +655,7 @@
                                     }
                                 });
                             });
-
+    
                             resolve(fileMatches);
                         } catch (error) {
                             console.error("Error reading Excel file:", error);
@@ -650,18 +665,18 @@
                     reader.readAsBinaryString(file);
                 });
             });
-
+    
             // Wait for all files to be processed
             totalMatches = (await Promise.all(matchPromises)).reduce((a, b) => a + b, 0);
-
+    
             // Update UI
             document.getElementById('matchCount').innerText = totalMatches;
             document.getElementById('matchCountSection').style.display = totalMatches > 0 ? 'block' : 'none';
-
+    
             // Enable/disable process button based on matches
             const processBtn = document.getElementById('processBtn');
             processBtn.disabled = totalMatches === 0;
-
+    
             // Optional: Add visual indication for matches
             if (totalMatches > 0) {
                 processBtn.classList.add('has-matches');
@@ -669,28 +684,28 @@
                 processBtn.classList.remove('has-matches');
             }
         }
-
+    
         document.getElementById('processBtn').addEventListener('click', function() {
             const findText = document.getElementById('findInput').value;
             const replaceText = document.getElementById('replaceInput').value;
-
+    
             if (findText.trim() === '') {
                 alert('The "Find" field cannot be blank.');
                 return;
             }
-
+    
             if (replaceText.trim() === '') {
                 alert('The "Replace with" field cannot be blank.');
                 return;
             }
-
+    
             processFiles();
         });
-
+    
         document.addEventListener('DOMContentLoaded', () => {
             const landingPage = document.getElementById('landingPage');
             const startProcessingBtn = document.getElementById('startProcessingBtn');
-
+    
             // Hide landing page and enable main app
             startProcessingBtn.addEventListener('click', () => {
                 landingPage.classList.add('hidden');
@@ -698,19 +713,18 @@
                     landingPage.style.display = 'none';
                 }, 500);
             });
-
+    
             // Optional: If you want to show landing page again
             function showLandingPage() {
                 landingPage.style.display = 'flex';
                 landingPage.classList.remove('hidden');
             }
         });
-
-
+    
         // Automatically call countMatchesInFiles whenever findInput value changes
         document.getElementById('findInput').addEventListener('input', countMatchesInFiles);
     </script>
     <!-- Include the SheetJS library at the end with defer -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.1/xlsx.full.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.1/xlsx.full.min.js" defer></script>    
 </body>
 </html>
