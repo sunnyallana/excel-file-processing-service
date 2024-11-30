@@ -17,6 +17,7 @@ use env_logger;
 use num_cpus;
 use swagger_ui::{Assets, Config, Spec, swagger_spec_file};
 use mime_guess::from_path;
+use postcard::to_stdvec;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessingResult {
@@ -126,13 +127,18 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
     info!("Files to process: {:?}", files_to_process);
 
     let mut zip_buffer = Vec::new();
+    let mut total_replacements = 0;
+    let mut original_filename = String::new();
+
     {
         let mut zip = ZipWriter::new(Cursor::new(&mut zip_buffer));
         let options = FileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(0o755);
 
-        for (file_path, original_filename) in &files_to_process {
+        for (file_path, filename) in &files_to_process {
+            original_filename = filename.clone();
+
             // Open the workbook
             let mut workbook: Xlsx<_> = open_workbook(&file_path)
                 .map_err(actix_web::error::ErrorInternalServerError)?;
@@ -144,7 +150,7 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
 
             // Prepare output filename with timestamp
             let timestamp = Local::now().format("%m%d%y%H%M%S");
-            let original_stem = Path::new(&original_filename).file_stem().unwrap_or_default().to_string_lossy().to_string();
+            let original_stem = Path::new(&filename).file_stem().unwrap_or_default().to_string_lossy().to_string();
             let new_filename = format!(
                 "{}Replace0-{}.xlsx",
                 original_stem,
@@ -155,8 +161,6 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
             // Create a new workbook for output
             let mut xlsx_workbook = Workbook::new();
             let worksheet = xlsx_workbook.add_worksheet();
-
-            let mut total_replacements = 0;
 
             // Create formats
             let default_format = Format::new();
@@ -244,6 +248,13 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
 
         zip.finish().map_err(actix_web::error::ErrorInternalServerError)?;
     }
+
+    // Serialize the result using Postcard
+    let processing_result = ProcessingResult {
+        replaced_count: total_replacements,
+        filename: original_filename,
+    };
+    let _serialized_result = to_stdvec(&processing_result).map_err(actix_web::error::ErrorInternalServerError)?;
 
     Ok(HttpResponse::Ok()
         .content_type("application/zip")
