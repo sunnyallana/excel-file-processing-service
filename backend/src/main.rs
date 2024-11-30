@@ -1,4 +1,4 @@
-use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Result};
+use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Result, ResponseError};
 use actix_multipart::Multipart;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use zip::{write::FileOptions, ZipWriter};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use chrono::Local;
-use calamine::{open_workbook, Reader, DataType, Xlsx};
+use calamine::{open_workbook, Reader, DataType, Xlsx, XlsxError};
 use rust_xlsxwriter::{Workbook, Format, Color};
 use actix_cors::Cors;
 use log::info;
@@ -18,6 +18,10 @@ use num_cpus;
 use swagger_ui::{Assets, Config, Spec, swagger_spec_file};
 use mime_guess::from_path;
 use postcard::to_stdvec;
+use rayon::prelude::*;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::fmt;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessingResult {
@@ -78,6 +82,153 @@ fn split_and_replace(original: &str, find: &str, replace: &str) -> Vec<TextSegme
     result
 }
 
+#[derive(Debug)]
+enum ProcessFileError {
+    IoError(std::io::Error),
+    CalamineError(XlsxError),
+    XlsxWriterError(rust_xlsxwriter::XlsxError),
+    ZipError(zip::result::ZipError),
+}
+
+impl From<std::io::Error> for ProcessFileError {
+    fn from(err: std::io::Error) -> ProcessFileError {
+        ProcessFileError::IoError(err)
+    }
+}
+
+impl From<XlsxError> for ProcessFileError {
+    fn from(err: XlsxError) -> ProcessFileError {
+        ProcessFileError::CalamineError(err)
+    }
+}
+
+impl From<rust_xlsxwriter::XlsxError> for ProcessFileError {
+    fn from(err: rust_xlsxwriter::XlsxError) -> ProcessFileError {
+        ProcessFileError::XlsxWriterError(err)
+    }
+}
+
+impl From<zip::result::ZipError> for ProcessFileError {
+    fn from(err: zip::result::ZipError) -> ProcessFileError {
+        ProcessFileError::ZipError(err)
+    }
+}
+
+impl fmt::Display for ProcessFileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessFileError::IoError(err) => write!(f, "IO error: {}", err),
+            ProcessFileError::CalamineError(err) => write!(f, "Calamine error: {}", err),
+            ProcessFileError::XlsxWriterError(err) => write!(f, "XlsxWriter error: {}", err),
+            ProcessFileError::ZipError(err) => write!(f, "Zip error: {}", err),
+        }
+    }
+}
+
+impl ResponseError for ProcessFileError {
+    fn error_response(&self) -> HttpResponse {
+        HttpResponse::InternalServerError().finish()
+    }
+}
+
+fn process_file(
+    file_path: &PathBuf,
+    original_filename: &String,
+    find_text: &String,
+    replace_text: &String,
+    temp_dir: &TempDir,
+) -> Result<(PathBuf, usize), ProcessFileError> {
+    // Open the workbook
+    let mut workbook: Xlsx<_> = open_workbook(&file_path)?;
+
+    // Get the first worksheet (as per requirements)
+    let sheet = workbook.worksheet_range_at(0)
+        .unwrap_or_else(|| panic!("No worksheet found"))?;
+
+    // Prepare output filename with timestamp
+    let timestamp = Local::now().format("%m%d%y%H%M%S");
+    let original_stem = Path::new(&original_filename).file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let new_filename = format!(
+        "{}Replace0-{}.xlsx",
+        original_stem,
+        timestamp
+    );
+    let _processed_path = temp_dir.path().join(&new_filename);
+
+    // Create a new workbook for output
+    let mut xlsx_workbook = Workbook::new();
+    let worksheet = xlsx_workbook.add_worksheet();
+
+    let mut total_replacements = 0;
+
+    // Create formats
+    let default_format = Format::new();
+    let red_format = Format::new()
+        .set_font_color(Color::Red)
+        .set_bold();
+
+    // Process each cell in the first sheet
+    for (row_idx, row) in sheet.rows().enumerate() {
+        for (col_idx, cell) in row.iter().enumerate() {
+            match cell {
+                DataType::String(s) => {
+                    if s.contains(&*find_text) {
+                        total_replacements += 1;
+
+                        // Split the string into parts to be colored
+                        let parts = split_and_replace(s, &find_text, &replace_text);
+
+                        // For cells with replacements, create a rich text format
+                        let mut rich_text: Vec<(&Format, &str)> = Vec::new();
+                        for part in &parts {
+                            let format = if part.is_replaced {
+                                &red_format
+                            } else {
+                                &default_format
+                            };
+
+                            rich_text.push((format, part.text.as_str()));
+                        }
+
+                        // Write the rich text to the cell
+                        worksheet.write_rich_string(
+                            row_idx as u32,
+                            col_idx as u16,
+                            &rich_text
+                        )?;
+                    } else {
+                        worksheet.write_string(row_idx as u32, col_idx as u16, s.trim())?;
+                    }
+                },
+                DataType::Float(n) => {
+                    worksheet.write_number(row_idx as u32, col_idx as u16, *n)?;
+                },
+                DataType::Int(n) => {
+                    worksheet.write_number(row_idx as u32, col_idx as u16, *n as f64)?;
+                },
+                DataType::DateTime(dt) => {
+                    worksheet.write_string(row_idx as u32, col_idx as u16, &dt.to_string())?;
+                },
+                _ => {
+                    worksheet.write_string(row_idx as u32, col_idx as u16, "")?;
+                }
+            }
+        }
+    }
+
+    let final_filename = format!(
+        "{}Replace{}-{}.xlsx",
+        original_stem,
+        total_replacements,
+        timestamp
+    );
+    let final_processed_path = temp_dir.path().join(&final_filename);
+
+    xlsx_workbook.save(&final_processed_path)?;
+
+    Ok((final_processed_path, total_replacements))
+}
+
 async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
     let temp_dir = TempDir::new().map_err(actix_web::error::ErrorInternalServerError)?;
     let mut files_to_process: Vec<(PathBuf, String)> = Vec::new();
@@ -128,7 +279,7 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
 
     let mut zip_buffer = Vec::new();
     let mut total_replacements = 0;
-    let mut original_filename = String::new();
+    let original_filename = Arc::new(Mutex::new(String::new()));
 
     {
         let mut zip = ZipWriter::new(Cursor::new(&mut zip_buffer));
@@ -136,104 +287,17 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(0o755);
 
-        for (file_path, filename) in &files_to_process {
-            original_filename = filename.clone();
+        let results: Result<Vec<_>, ProcessFileError> = files_to_process.par_iter().map(|(file_path, filename)| {
+            let mut original_filename = original_filename.lock().unwrap();
+            *original_filename = filename.clone();
+            process_file(file_path, filename, &find_text, &replace_text, &temp_dir)
+        }).collect();
 
-            // Open the workbook
-            let mut workbook: Xlsx<_> = open_workbook(&file_path)
-                .map_err(actix_web::error::ErrorInternalServerError)?;
-
-            // Get the first worksheet (as per requirements)
-            let sheet = workbook.worksheet_range_at(0)
-                .unwrap_or_else(|| panic!("No worksheet found"))
-                .map_err(actix_web::error::ErrorInternalServerError)?;
-
-            // Prepare output filename with timestamp
-            let timestamp = Local::now().format("%m%d%y%H%M%S");
-            let original_stem = Path::new(&filename).file_stem().unwrap_or_default().to_string_lossy().to_string();
-            let new_filename = format!(
-                "{}Replace0-{}.xlsx",
-                original_stem,
-                timestamp
-            );
-            let _processed_path = temp_dir.path().join(&new_filename);
-
-            // Create a new workbook for output
-            let mut xlsx_workbook = Workbook::new();
-            let worksheet = xlsx_workbook.add_worksheet();
-
-            // Create formats
-            let default_format = Format::new();
-            let red_format = Format::new()
-                .set_font_color(Color::Red)
-                .set_bold();
-
-            // Process each cell in the first sheet
-            for (row_idx, row) in sheet.rows().enumerate() {
-                for (col_idx, cell) in row.iter().enumerate() {
-                    match cell {
-                        DataType::String(s) => {
-                            if s.contains(&find_text) {
-                                total_replacements += 1;
-
-                                // Split the string into parts to be colored
-                                let parts = split_and_replace(s, &find_text, &replace_text);
-
-                                // For cells with replacements, create a rich text format
-                                let mut rich_text: Vec<(&Format, &str)> = Vec::new();
-                                for part in &parts {
-                                    let format = if part.is_replaced {
-                                        &red_format
-                                    } else {
-                                        &default_format
-                                    };
-
-                                    rich_text.push((format, part.text.as_str()));
-                                }
-
-                                // Write the rich text to the cell
-                                worksheet.write_rich_string(
-                                    row_idx as u32,
-                                    col_idx as u16,
-                                    &rich_text
-                                ).map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-                            } else {
-                                worksheet.write_string(row_idx as u32, col_idx as u16, s.trim())
-                                    .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-                            }
-                        },
-                        DataType::Float(n) => {
-                            worksheet.write_number(row_idx as u32, col_idx as u16, *n)
-                                .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-                        },
-                        DataType::Int(n) => {
-                            worksheet.write_number(row_idx as u32, col_idx as u16, *n as f64)
-                                .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-                        },
-                        DataType::DateTime(dt) => {
-                            worksheet.write_string(row_idx as u32, col_idx as u16, &dt.to_string())
-                                .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-                        },
-                        _ => {
-                            worksheet.write_string(row_idx as u32, col_idx as u16, "")
-                                .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-                        }
-                    }
-                }
-            }
-
-            let final_filename = format!(
-                "{}Replace{}-{}.xlsx",
-                original_stem,
-                total_replacements,
-                timestamp
-            );
-            let final_processed_path = temp_dir.path().join(&final_filename);
-
-            xlsx_workbook.save(&final_processed_path).map_err(actix_web::error::ErrorInternalServerError)?;
+        for (final_processed_path, replacements) in results? {
+            total_replacements += replacements;
 
             // Add processed file to zip
-            zip.start_file(&final_filename, options)
+            zip.start_file(final_processed_path.file_name().unwrap().to_str().unwrap(), options)
                 .map_err(actix_web::error::ErrorInternalServerError)?;
 
             let mut content = Vec::new();
@@ -252,7 +316,7 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
     // Serialize the result using Postcard
     let processing_result = ProcessingResult {
         replaced_count: total_replacements,
-        filename: original_filename,
+        filename: original_filename.lock().unwrap().clone(),
     };
     let _serialized_result = to_stdvec(&processing_result).map_err(actix_web::error::ErrorInternalServerError)?;
 

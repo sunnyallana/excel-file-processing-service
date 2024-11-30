@@ -21,3 +21,4 @@ swagger-ui = "0.1.5"
 mime_guess = "2.0.5"
 postcard = { version = "0.7", features = ["use-std"] }
 rayon = "1.5"
+tokio = { version = "1", features = ["full"] }
