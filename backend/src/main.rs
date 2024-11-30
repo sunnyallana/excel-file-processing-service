@@ -18,13 +18,13 @@ use num_cpus;
 use swagger_ui::{Assets, Config, Spec, swagger_spec_file};
 use mime_guess::from_path;
 use postcard::to_stdvec;
-use rayon::prelude::*;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::fmt;
 use tokio::task;
 use tokio::task::JoinError;
 use futures::future::join_all;
+use actix_files as fs;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessingResult {
@@ -428,7 +428,7 @@ async fn main() -> std::io::Result<()> {
     let port = 5000;
     let num_workers = num_cpus::get();
 
-    println!("Server starting at http://{}:{}", host, port);
+    println!("Access Application at http://{}:{}/frontend", host, port);
     println!("Access Swagger UI at http://{}:{}/swagger-ui/", host, port);
 
     HttpServer::new(|| {
@@ -444,6 +444,9 @@ async fn main() -> std::io::Result<()> {
             .service(
                 web::resource("/swagger-ui/{tail:.*}")
                     .route(web::get().to(swagger_ui_handler))
+            )
+            .service(
+                fs::Files::new("/frontend", "../../frontend").index_file("index.html")
             )
             .route("/docs/openapi.yaml", web::get().to(|| async {
                 HttpResponse::Ok()
