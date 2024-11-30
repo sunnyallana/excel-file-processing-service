@@ -22,6 +22,9 @@ use rayon::prelude::*;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::fmt;
+use tokio::task;
+use tokio::task::JoinError;
+use futures::future::join_all;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessingResult {
@@ -88,6 +91,7 @@ enum ProcessFileError {
     CalamineError(XlsxError),
     XlsxWriterError(rust_xlsxwriter::XlsxError),
     ZipError(zip::result::ZipError),
+    JoinError(JoinError),
 }
 
 impl From<std::io::Error> for ProcessFileError {
@@ -114,6 +118,12 @@ impl From<zip::result::ZipError> for ProcessFileError {
     }
 }
 
+impl From<JoinError> for ProcessFileError {
+    fn from(err: JoinError) -> ProcessFileError {
+        ProcessFileError::JoinError(err)
+    }
+}
+
 impl fmt::Display for ProcessFileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -121,6 +131,7 @@ impl fmt::Display for ProcessFileError {
             ProcessFileError::CalamineError(err) => write!(f, "Calamine error: {}", err),
             ProcessFileError::XlsxWriterError(err) => write!(f, "XlsxWriter error: {}", err),
             ProcessFileError::ZipError(err) => write!(f, "Zip error: {}", err),
+            ProcessFileError::JoinError(err) => write!(f, "Join error: {}", err),
         }
     }
 }
@@ -131,12 +142,12 @@ impl ResponseError for ProcessFileError {
     }
 }
 
-fn process_file(
-    file_path: &PathBuf,
-    original_filename: &String,
-    find_text: &String,
-    replace_text: &String,
-    temp_dir: &TempDir,
+async fn process_file(
+    file_path: PathBuf,
+    original_filename: String,
+    find_text: String,
+    replace_text: String,
+    temp_dir: Arc<TempDir>,
 ) -> Result<(PathBuf, usize), ProcessFileError> {
     // Open the workbook
     let mut workbook: Xlsx<_> = open_workbook(&file_path)?;
@@ -230,7 +241,7 @@ fn process_file(
 }
 
 async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
-    let temp_dir = TempDir::new().map_err(actix_web::error::ErrorInternalServerError)?;
+    let temp_dir = Arc::new(TempDir::new().map_err(actix_web::error::ErrorInternalServerError)?);
     let mut files_to_process: Vec<(PathBuf, String)> = Vec::new();
     let mut find_text = String::new();
     let mut replace_text = String::new();
@@ -279,7 +290,7 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
 
     let mut zip_buffer = Vec::new();
     let mut total_replacements = 0;
-    let original_filename = Arc::new(Mutex::new(String::new()));
+    let processed_filename = Arc::new(Mutex::new(String::new()));
 
     {
         let mut zip = ZipWriter::new(Cursor::new(&mut zip_buffer));
@@ -287,27 +298,50 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(0o755);
 
-        let results: Result<Vec<_>, ProcessFileError> = files_to_process.par_iter().map(|(file_path, filename)| {
-            let mut original_filename = original_filename.lock().unwrap();
-            *original_filename = filename.clone();
-            process_file(file_path, filename, &find_text, &replace_text, &temp_dir)
+        // Create a vector of tuples with cloned data
+        let processed_files: Vec<_> = files_to_process.into_iter().map(|(file_path, filename)| {
+            (file_path, filename, find_text.clone(), replace_text.clone())
         }).collect();
 
-        for (final_processed_path, replacements) in results? {
-            total_replacements += replacements;
+        // Use futures to process files
+        let futures: Vec<_> = processed_files.into_iter().map(|(file_path, filename, find_text, replace_text)| {
+            let processed_filename = Arc::clone(&processed_filename);
+            let temp_dir = Arc::clone(&temp_dir);
 
-            // Add processed file to zip
-            zip.start_file(final_processed_path.file_name().unwrap().to_str().unwrap(), options)
-                .map_err(actix_web::error::ErrorInternalServerError)?;
+            task::spawn(async move {
+                // Update the filename in a thread-safe manner
+                {
+                    let mut filename_lock = processed_filename.lock().unwrap();
+                    *filename_lock = filename.clone();
+                }
 
-            let mut content = Vec::new();
-            File::open(&final_processed_path)
-                .map_err(actix_web::error::ErrorInternalServerError)?
-                .read_to_end(&mut content)
-                .map_err(actix_web::error::ErrorInternalServerError)?;
+                process_file(file_path, filename.clone(), find_text, replace_text, temp_dir).await
+            })
+        }).collect();
 
-            zip.write_all(&content)
-                .map_err(actix_web::error::ErrorInternalServerError)?;
+        let results = join_all(futures).await;
+
+        for result in results {
+            match result {
+                Ok(Ok((final_processed_path, replacements))) => {
+                    total_replacements += replacements;
+
+                    // Add processed file to zip
+                    zip.start_file(final_processed_path.file_name().unwrap().to_str().unwrap(), options)
+                        .map_err(actix_web::error::ErrorInternalServerError)?;
+
+                    let mut content = Vec::new();
+                    File::open(&final_processed_path)
+                        .map_err(actix_web::error::ErrorInternalServerError)?
+                        .read_to_end(&mut content)
+                        .map_err(actix_web::error::ErrorInternalServerError)?;
+
+                    zip.write_all(&content)
+                        .map_err(actix_web::error::ErrorInternalServerError)?;
+                },
+                Ok(Err(e)) => return Err(ProcessFileError::from(e).into()),
+                Err(e) => return Err(ProcessFileError::from(e).into()),
+            }
         }
 
         zip.finish().map_err(actix_web::error::ErrorInternalServerError)?;
@@ -316,7 +350,7 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
     // Serialize the result using Postcard
     let processing_result = ProcessingResult {
         replaced_count: total_replacements,
-        filename: original_filename.lock().unwrap().clone(),
+        filename: processed_filename.lock().unwrap().clone(),
     };
     let _serialized_result = to_stdvec(&processing_result).map_err(actix_web::error::ErrorInternalServerError)?;
 
