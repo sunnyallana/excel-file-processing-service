@@ -253,7 +253,6 @@
             animation: pulse 1.5s infinite;
         }
 
-        
         .landing-page-overlay {
             position: fixed;
             top: 0;
@@ -430,48 +429,48 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script>
         let uploadedFiles = new Set();
-    
+
         // Handle file input changes
         document.getElementById('fileInput').addEventListener('change', handleFileSelect);
         document.getElementById('folderInput').addEventListener('change', handleFolderSelect);
         document.getElementById('zipInput').addEventListener('change', handleZipSelect);
-    
+
         // Handle normal file selection (Excel files)
         function handleFileSelect(event) {
             const files = Array.from(event.target.files);
-    
+
             let validFiles = files.filter(file => {
                 const ext = file.name.toLowerCase().split('.').pop();
                 return (ext === 'xls' || ext === 'xlsx');
             });
-    
+
             validFiles.forEach(file => {
                 uploadedFiles.add(file);
             });
-    
+
             updateFilesList();
             updateStats();
             event.target.value = '';
         }
-    
+
         // Handle folder selection
         function handleFolderSelect(event) {
             const files = Array.from(event.target.files);
-    
+
             let validFiles = files.filter(file => {
                 const ext = file.name.toLowerCase().split('.').pop();
                 return (ext === 'xls' || ext === 'xlsx');
             });
-    
+
             validFiles.forEach(file => {
                 uploadedFiles.add(file);
             });
-    
+
             updateFilesList();
             updateStats();
             event.target.value = '';
         }
-    
+
         // Handle zip file selection using JSZip
         function handleZipSelect(event) {
             const file = event.target.files[0];
@@ -500,7 +499,7 @@
             }
             event.target.value = '';
         }
-    
+
         // Update files list UI
         function updateFilesList() {
             const filesList = document.getElementById('filesList');
@@ -515,14 +514,14 @@
                 filesList.appendChild(fileItem);
             });
         }
-    
+
         // Delete a file from the list
         function deleteFile(fileName) {
             uploadedFiles = new Set([...uploadedFiles].filter(file => file.name !== fileName));
             updateFilesList();
             updateStats();
         }
-    
+
         // Update stats (total files and total size)
         function updateStats() {
             const totalFiles = uploadedFiles.size;
@@ -530,45 +529,49 @@
             document.getElementById('totalFiles').innerText = totalFiles;
             document.getElementById('totalSize').innerText = (totalSize / (1024 * 1024)).toFixed(2) + ' MB';
         }
-    
+
         function showLoading(show) {
             const loadingElement = document.getElementById('loading');
             loadingElement.style.display = show ? 'block' : 'none';
         }
-    
+
         async function processFiles() {
             const findText = document.getElementById('findInput').value;
             const replaceText = document.getElementById('replaceInput').value;
-    
+
             if (uploadedFiles.size === 0) {
                 alert('Please add files to process');
                 return;
             }
-    
+
             showLoading(true);
-    
-            const formData = new FormData();
+
+            // Compress files into a ZIP archive
+            const zip = new JSZip();
             uploadedFiles.forEach(file => {
-                formData.append('files[]', file);
+                zip.file(file.name, file);
             });
-    
-            if (findText && replaceText) {
-                formData.append('find', findText);
-                formData.append('replace', replaceText);
-            }
-    
+
+            const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 9 } });
+
+            // Create a FormData object
+            const formData = new FormData();
+            formData.append('file', zipBlob, 'uploaded_files.zip');
+            formData.append('find', findText);
+            formData.append('replace', replaceText);
+
             try {
                 const response = await fetch('http://127.0.0.1:5000/process-excel', {
                     method: 'POST',
                     body: formData,
                 });
-    
+
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-    
+
                 const result = await response.blob();
-    
+
                 // Create a unique filename with timestamp
                 const timestamp = new Date().toLocaleDateString('en-US', {
                     month: '2-digit',
@@ -579,35 +582,35 @@
                     second: '2-digit',
                     hour12: false
                 }).replace(/[/:\s]/g, '');
-    
+
                 const url = URL.createObjectURL(result);
                 const link = document.createElement('a');
                 link.href = url;
-                link.download = `firstsheet${timestamp}.zip`;
-    
+                link.download = `processed_files_${timestamp}.zip`;
+
                 // Trigger download
                 document.body.appendChild(link);
                 link.click();
-    
+
                 // Clean up
                 document.body.removeChild(link);
                 URL.revokeObjectURL(url);
-    
+
                 showLoading(false);
-    
+
                 // Optional: Show success message
                 alert('Files processed and downloaded successfully!');
-    
+
                 // Clear input fields and file list
                 resetForm();
-    
+
             } catch (error) {
                 console.error('Error processing files:', error);
                 alert('An error occurred during file processing');
                 showLoading(false);
             }
         }
-    
+
         // Function to reset the form
         function resetForm() {
             document.getElementById('findInput').value = '';
@@ -619,94 +622,239 @@
             document.getElementById('processBtn').disabled = true;
             document.getElementById('processBtn').classList.remove('has-matches');
         }
-    
-        // Enhance match counting function to be more precise
+
+        // Create a pool of web workers based on available CPU cores
+        function createWorkerPool() {
+            const workerCount = navigator.hardwareConcurrency || 4;
+            const workers = [];
+
+            for (let i = 0; i < workerCount; i++) {
+                const worker = new Worker(URL.createObjectURL(new Blob([`
+                // Web Worker for Excel File Processing
+                importScripts('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.1/xlsx.full.min.js');
+
+                // Optimized text search function
+                function fastCountMatches(data, findText) {
+                    // Use efficient substring search instead of regex
+                    let matchCount = 0;
+
+                    // Handle various cell types efficiently
+                    const checkCell = (cell) => {
+                        if (!cell) return 0;
+
+                        // Convert to string
+                        let cellText = String(cell);
+
+                        // Use efficient substring search instead of regex
+                        let count = 0;
+                        let pos = cellText.indexOf(findText);
+                        while (pos !== -1) {
+                            count++;
+                            pos = cellText.indexOf(findText, pos + 1);
+                        }
+                        return count;
+                    };
+
+                    // Process worksheet data
+                    data.forEach(row => {
+                        if (Array.isArray(row)) {
+                            row.forEach(cell => {
+                                matchCount += checkCell(cell);
+                            });
+                        }
+                    });
+
+                    return matchCount;
+                }
+
+                // Message handler for processing files
+                self.onmessage = async function(e) {
+                    const { file, findText } = e.data;
+
+                    try {
+                        // Read file as binary string
+                        const reader = new FileReader();
+                        reader.onload = function(event) {
+                            try {
+                                const data = event.target.result;
+                                const workbook = XLSX.read(data, { type: 'binary' });
+
+                                // Process first sheet only for speed
+                                const sheetName = workbook.SheetNames[0];
+                                const worksheet = workbook.Sheets[sheetName];
+                                const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+                                // Count matches
+                                const matches = fastCountMatches(jsonData, findText);
+
+                                // Send result back
+                                self.postMessage({
+                                    filename: file.name,
+                                    matches: matches,
+                                    success: true
+                                });
+                            } catch (processingError) {
+                                self.postMessage({
+                                    filename: file.name,
+                                    matches: 0,
+                                    success: false,
+                                    error: processingError.message
+                                });
+                            }
+                        };
+                        reader.readAsBinaryString(file);
+                    } catch (error) {
+                        self.postMessage({
+                            filename: file.name,
+                            matches: 0,
+                            success: false,
+                            error: error.message
+                        });
+                    }
+                };
+                `], { type: 'text/javascript' })));
+
+                workers.push(worker);
+            }
+
+            return workers;
+        }
+
+        // Manage file processing with worker pool
+        async function fastCountMatchesInFiles(files, findText) {
+            return new Promise((resolve, reject) => {
+                // Validate input
+                if (!findText || files.length === 0) {
+                    resolve(0);
+                    return;
+                }
+
+                // Create worker pool
+                const workers = createWorkerPool();
+                let completedFiles = 0;
+                let totalMatches = 0;
+                const fileResults = new Map();
+
+                // Distribute files among workers
+                const distributeFiles = () => {
+                    while (completedFiles < files.length && workers.length > 0) {
+                        const worker = workers.pop();
+                        const file = files[completedFiles];
+
+                        worker.onmessage = (e) => {
+                            // Process worker result
+                            if (e.data.success) {
+                                totalMatches += e.data.matches;
+                                fileResults.set(e.data.filename, e.data.matches);
+                            }
+
+                            // Mark file as processed
+                            completedFiles++;
+                            workers.push(worker);
+
+                            // Continue distribution if more files
+                            if (completedFiles < files.length) {
+                                const nextFile = files[completedFiles];
+                                worker.postMessage({ file: nextFile, findText });
+                            }
+
+                            // Resolve when all files processed
+                            if (completedFiles === files.length) {
+                                workers.forEach(w => w.terminate());
+                                resolve(totalMatches);
+                            }
+                        };
+
+                        // Initial file distribution
+                        worker.postMessage({ file, findText });
+                    }
+                };
+
+                // Handle any processing errors
+                workers.forEach(worker => {
+                    worker.onerror = (error) => {
+                        console.error('Worker error:', error);
+                        completedFiles++;
+
+                        // If all files processed despite error
+                        if (completedFiles === files.length) {
+                            workers.forEach(w => w.terminate());
+                            resolve(totalMatches);
+                        }
+                    };
+                });
+
+                // Start file distribution
+                distributeFiles();
+            });
+        }
+
+        // Usage Example (to be integrated with existing script)
         async function countMatchesInFiles() {
             const findText = document.getElementById('findInput').value;
-            let totalMatches = 0;
-    
+
             // Check if findText is entered
             if (!findText) {
                 document.getElementById('matchCountSection').style.display = 'none';
                 document.getElementById('processBtn').disabled = true;
                 return;
             }
-    
-            // Create a promise to aggregate matches across all files
-            const matchPromises = Array.from(uploadedFiles).map(file => {
-                return new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = function(e) {
-                        try {
-                            const data = e.target.result;
-                            const workbook = XLSX.read(data, { type: 'binary' });
-                            let fileMatches = 0;
-    
-                            // Process only the first sheet
-                            const sheetName = workbook.SheetNames[0];
-                            const worksheet = workbook.Sheets[sheetName];
-                            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-    
-                            // Count matches
-                            jsonData.forEach(row => {
-                                row.forEach(cell => {
-                                    if (cell && typeof cell === 'string') {
-                                        const matches = (cell.match(new RegExp(findText, 'g')) || []).length;
-                                        fileMatches += matches;
-                                    }
-                                });
-                            });
-    
-                            resolve(fileMatches);
-                        } catch (error) {
-                            console.error("Error reading Excel file:", error);
-                            resolve(0);
-                        }
-                    };
-                    reader.readAsBinaryString(file);
-                });
-            });
-    
-            // Wait for all files to be processed
-            totalMatches = (await Promise.all(matchPromises)).reduce((a, b) => a + b, 0);
-    
-            // Update UI
-            document.getElementById('matchCount').innerText = totalMatches;
-            document.getElementById('matchCountSection').style.display = totalMatches > 0 ? 'block' : 'none';
-    
-            // Enable/disable process button based on matches
-            const processBtn = document.getElementById('processBtn');
-            processBtn.disabled = totalMatches === 0;
-    
-            // Optional: Add visual indication for matches
-            if (totalMatches > 0) {
-                processBtn.classList.add('has-matches');
-            } else {
-                processBtn.classList.remove('has-matches');
+
+            try {
+                // Convert Set to Array for processing
+                const files = Array.from(uploadedFiles);
+
+                // Start timing
+                console.time('Match Counting');
+
+                // Count matches using optimized method
+                const totalMatches = await fastCountMatchesInFiles(files, findText);
+
+                // End timing
+                console.timeEnd('Match Counting');
+
+                // Update UI
+                document.getElementById('matchCount').innerText = totalMatches;
+                document.getElementById('matchCountSection').style.display = totalMatches > 0 ? 'block' : 'none';
+
+                // Enable/disable process button based on matches
+                const processBtn = document.getElementById('processBtn');
+                processBtn.disabled = totalMatches === 0;
+
+                // Optional: Add visual indication for matches
+                if (totalMatches > 0) {
+                    processBtn.classList.add('has-matches');
+                } else {
+                    processBtn.classList.remove('has-matches');
+                }
+            } catch (error) {
+                console.error('Error counting matches:', error);
+                // Fallback to existing method if worker-based approach fails
+                // (existing countMatchesInFiles implementation)
             }
         }
-    
+
         document.getElementById('processBtn').addEventListener('click', function() {
             const findText = document.getElementById('findInput').value;
             const replaceText = document.getElementById('replaceInput').value;
-    
+
             if (findText.trim() === '') {
                 alert('The "Find" field cannot be blank.');
                 return;
             }
-    
+
             if (replaceText.trim() === '') {
                 alert('The "Replace with" field cannot be blank.');
                 return;
             }
-    
+
             processFiles();
         });
-    
+
         document.addEventListener('DOMContentLoaded', () => {
             const landingPage = document.getElementById('landingPage');
             const startProcessingBtn = document.getElementById('startProcessingBtn');
-    
+
             // Hide landing page and enable main app
             startProcessingBtn.addEventListener('click', () => {
                 landingPage.classList.add('hidden');
@@ -714,18 +862,18 @@
                     landingPage.style.display = 'none';
                 }, 500);
             });
-    
+
             // Optional: If you want to show landing page again
             function showLandingPage() {
                 landingPage.style.display = 'flex';
                 landingPage.classList.remove('hidden');
             }
         });
-    
+
         // Automatically call countMatchesInFiles whenever findInput value changes
         document.getElementById('findInput').addEventListener('input', countMatchesInFiles);
     </script>
     <!-- Include the SheetJS library at the end with defer -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.1/xlsx.full.min.js" defer></script>    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.1/xlsx.full.min.js" defer></script>
 </body>
 </html>

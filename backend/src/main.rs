@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Write, Read};
 use tempfile::TempDir;
-use zip::{write::FileOptions, ZipWriter};
+use zip::{read::ZipArchive, write::FileOptions, ZipWriter};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use chrono::Local;
@@ -17,7 +17,7 @@ use env_logger;
 use num_cpus;
 use swagger_ui::{Assets, Config, Spec, swagger_spec_file};
 use mime_guess::from_path;
-use postcard::to_stdvec;
+use postcard::to_vec;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::fmt;
@@ -26,7 +26,14 @@ use tokio::task::JoinError;
 use futures::future::join_all;
 use actix_files as fs;
 
-#[derive(Debug, Serialize, Deserialize)]
+// Optimize the processing result structure for more efficient serialization
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct ProcessingResultBatch {
+    total_replaced_count: usize,
+    processed_files: Vec<ProcessingResult>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct ProcessingResult {
     replaced_count: usize,
     filename: String,
@@ -92,6 +99,7 @@ enum ProcessFileError {
     XlsxWriterError(rust_xlsxwriter::XlsxError),
     ZipError(zip::result::ZipError),
     JoinError(JoinError),
+    PostcardError(postcard::Error),
 }
 
 impl From<std::io::Error> for ProcessFileError {
@@ -124,6 +132,12 @@ impl From<JoinError> for ProcessFileError {
     }
 }
 
+impl From<postcard::Error> for ProcessFileError {
+    fn from(err: postcard::Error) -> ProcessFileError {
+        ProcessFileError::PostcardError(err)
+    }
+}
+
 impl fmt::Display for ProcessFileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -132,6 +146,7 @@ impl fmt::Display for ProcessFileError {
             ProcessFileError::XlsxWriterError(err) => write!(f, "XlsxWriter error: {}", err),
             ProcessFileError::ZipError(err) => write!(f, "Zip error: {}", err),
             ProcessFileError::JoinError(err) => write!(f, "Join error: {}", err),
+            ProcessFileError::PostcardError(err) => write!(f, "Postcard error: {}", err),
         }
     }
 }
@@ -148,7 +163,7 @@ async fn process_file(
     find_text: String,
     replace_text: String,
     temp_dir: Arc<TempDir>,
-) -> Result<(PathBuf, usize), ProcessFileError> {
+) -> Result<ProcessingResult, ProcessFileError> {
     // Open the workbook
     let mut workbook: Xlsx<_> = open_workbook(&file_path)?;
 
@@ -237,7 +252,10 @@ async fn process_file(
 
     xlsx_workbook.save(&final_processed_path)?;
 
-    Ok((final_processed_path, total_replacements))
+    Ok(ProcessingResult {
+        replaced_count: total_replacements,
+        filename: final_filename,
+    })
 }
 
 async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
@@ -245,6 +263,7 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
     let mut files_to_process: Vec<(PathBuf, String)> = Vec::new();
     let mut find_text = String::new();
     let mut replace_text = String::new();
+    let mut zip_file_path = None;
 
     while let Some(item) = payload.next().await {
         let mut field = item?;
@@ -266,10 +285,10 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
                     }
                     replace_text = String::from_utf8(content).map_err(actix_web::error::ErrorInternalServerError)?;
                 },
-                "files[]" => {
+                "file" => {
                     let filename = content_disposition
                         .get_filename()
-                        .unwrap_or("unknown.xlsx")
+                        .unwrap_or("uploaded_files.zip")
                         .to_string();
 
                     let filepath = temp_dir.path().join(&filename);
@@ -279,18 +298,41 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
                         f.write_all(&chunk?).map_err(actix_web::error::ErrorInternalServerError)?;
                     }
 
-                    files_to_process.push((filepath, filename));
+                    zip_file_path = Some(filepath);
                 },
                 _ => {}
             }
         }
     }
 
+    if zip_file_path.is_none() {
+        return Err(actix_web::error::ErrorBadRequest("No file uploaded"));
+    }
+
+    let zip_file_path = zip_file_path.unwrap();
+
+    // Decompress the ZIP file
+    let file = File::open(&zip_file_path).map_err(actix_web::error::ErrorInternalServerError)?;
+    let mut archive = ZipArchive::new(file).map_err(actix_web::error::ErrorInternalServerError)?;
+    
+    for i in 0..archive.len() {
+        let mut zip_file = archive.by_index(i).map_err(actix_web::error::ErrorInternalServerError)?;
+        let outpath = match zip_file.enclosed_name() {
+            Some(path) => temp_dir.path().join(path),
+            None => continue,
+        };
+
+        if outpath.extension().map_or(false, |ext| ext == "xls" || ext == "xlsx") {
+            let mut outfile = File::create(&outpath).map_err(actix_web::error::ErrorInternalServerError)?;
+            std::io::copy(&mut zip_file, &mut outfile).map_err(actix_web::error::ErrorInternalServerError)?;
+            files_to_process.push((outpath, zip_file.name().to_string()));
+        }
+    }
+
     info!("Files to process: {:?}", files_to_process);
 
     let mut zip_buffer = Vec::new();
-    let mut total_replacements = 0;
-    let processed_filename = Arc::new(Mutex::new(String::new()));
+    let processing_result_batch = Arc::new(Mutex::new(ProcessingResultBatch::default()));
 
     {
         let mut zip = ZipWriter::new(Cursor::new(&mut zip_buffer));
@@ -305,17 +347,20 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
 
         // Use futures to process files
         let futures: Vec<_> = processed_files.into_iter().map(|(file_path, filename, find_text, replace_text)| {
-            let processed_filename = Arc::clone(&processed_filename);
+            let processing_result_batch = Arc::clone(&processing_result_batch);
             let temp_dir = Arc::clone(&temp_dir);
 
             task::spawn(async move {
-                // Update the filename in a thread-safe manner
-                {
-                    let mut filename_lock = processed_filename.lock().unwrap();
-                    *filename_lock = filename.clone();
+                let result = process_file(file_path, filename.clone(), find_text, replace_text, temp_dir).await;
+
+                // If processing is successful, update the batch result
+                if let Ok(ref processed_file) = result {
+                    let mut batch = processing_result_batch.lock().unwrap();
+                    batch.total_replaced_count += processed_file.replaced_count;
+                    batch.processed_files.push(processed_file.clone());
                 }
 
-                process_file(file_path, filename.clone(), find_text, replace_text, temp_dir).await
+                result
             })
         }).collect();
 
@@ -323,11 +368,11 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
 
         for result in results {
             match result {
-                Ok(Ok((final_processed_path, replacements))) => {
-                    total_replacements += replacements;
-
+                Ok(Ok(processed_file)) => {
                     // Add processed file to zip
-                    zip.start_file(final_processed_path.file_name().unwrap().to_str().unwrap(), options)
+                    let final_processed_path = temp_dir.path().join(&processed_file.filename);
+
+                    zip.start_file(&processed_file.filename, options)
                         .map_err(actix_web::error::ErrorInternalServerError)?;
 
                     let mut content = Vec::new();
@@ -347,15 +392,23 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
         zip.finish().map_err(actix_web::error::ErrorInternalServerError)?;
     }
 
-    // Serialize the result using Postcard
-    let processing_result = ProcessingResult {
-        replaced_count: total_replacements,
-        filename: processed_filename.lock().unwrap().clone(),
-    };
-    let _serialized_result = to_stdvec(&processing_result).map_err(actix_web::error::ErrorInternalServerError)?;
+    // Serialize the entire batch result using Postcard's more efficient serialization
+    let batch_result = processing_result_batch.lock().unwrap();
+    let _serialized_result: heapless::Vec<u8, 1024> = to_vec(&*batch_result)
+        .map_err(actix_web::error::ErrorInternalServerError)?;
+
+    // Generate a timestamp for the filename
+    let timestamp = Local::now().format("%Y%m%d%H%M%S");
+
+    // Optional: You can add the serialized metadata as a separate file in the zip or
+    // send it as a custom header if needed
+    // For this example, we'll just return the zip with the processed files
 
     Ok(HttpResponse::Ok()
         .content_type("application/zip")
+        .append_header(("Content-Disposition", format!("attachment; filename=\"processed_files_{}.zip\"", timestamp)))
+        .append_header(("X-Processed-Files-Count", batch_result.processed_files.len().to_string()))
+        .append_header(("X-Total-Replacements", batch_result.total_replaced_count.to_string()))
         .body(zip_buffer))
 }
 
