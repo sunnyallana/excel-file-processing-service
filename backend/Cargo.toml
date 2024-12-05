@@ -1,5 +1,5 @@
 [package]
-name = "excel-file-processing-service"
+name = "chinese-excel-file-processing-service"
 version = "0.1.0"
 edition = "2021"
 
@@ -14,13 +14,7 @@ chrono = "0.4"
 calamine = "0.17.0"
 rust_xlsxwriter = "0.79.4"
 actix-cors = "0.7.0"
-log = "0.4.22"
-env_logger = "0.11.5"
 num_cpus = "1.13.0"
 swagger-ui = "0.1.5"
 mime_guess = "2.0.5"
-postcard = { version = "0.7", features = ["use-std"] }
-rayon = "1.5"
-tokio = { version = "1", features = ["full"] }
 actix-files = "0.6.2"
-heapless = "0.7"

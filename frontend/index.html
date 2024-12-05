@@ -244,13 +244,34 @@
             font-weight: bold;
         }
 
-        #processBtn:disabled {
-            background-color: #ccc;
-            cursor: not-allowed;
-        }
         .action-btn.has-matches {
             background-color: #4CAF50;
             animation: pulse 1.5s infinite;
+        }
+
+        #findBtn{
+            flex: 1;
+            min-width: 200px;
+            padding: 15px;
+            background: linear-gradient(to right, #6a11cb, #2575fc);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        
+        }
+
+        #findBtn:disabled {
+            background: linear-gradient(to right, #555, #777);
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        #findBtn:hover {
+         scale: 1.00125;
         }
 
         .landing-page-overlay {
@@ -343,6 +364,64 @@
             pointer-events: none;
         }
 
+        #alertContainer {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            max-width: 400px;
+            width: 100%;
+        }
+
+        .alert {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 10px;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .alert-icon {
+            margin-right: 15px;
+            display: flex;
+            align-items: center;
+        }
+
+        .alert-icon svg {
+            width: 24px;
+            height: 24px;
+        }
+
+        .alert-content h4 {
+            margin: 0 0 5px 0;
+            font-size: 16px;
+        }
+
+        .alert-content p {
+            margin: 0;
+            font-size: 14px;
+        }
+
+        .alert.processing {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+        }
+
+        .alert.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .alert.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
         @keyframes pulse {
             0% {
                 transform: scale(1);
@@ -410,6 +489,7 @@
         <!-- Find and Replace section -->
         <div class="input-section">
             <input class="input-field" type="text" id="findInput" placeholder="Find string" />
+            <button id="findBtn" onclick="{countMatchesInFiles()}">Find</button>            
             <input class="input-field" type="text" id="replaceInput" placeholder="Replace with" />
         </div>
 
@@ -423,8 +503,10 @@
         <div class="files-list" id="filesList"></div>
 
         <!-- Process button -->
-        <button id="processBtn" class="action-btn" onclick="processFiles()" disabled>Process Files</button>
+        <button id="processBtn" class="action-btn" disabled>Process Files</button>
     </div>
+
+    <div id="alertContainer"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script>
@@ -520,6 +602,7 @@
             uploadedFiles = new Set([...uploadedFiles].filter(file => file.name !== fileName));
             updateFilesList();
             updateStats();
+            resetMatchCount();
         }
 
         // Update stats (total files and total size)
@@ -533,7 +616,80 @@
         function showLoading(show) {
             const loadingElement = document.getElementById('loading');
             loadingElement.style.display = show ? 'block' : 'none';
+
+            setTimeout(() => {
+                loadingElement.textContent = 'Processing files...';
+                loadingElement.style.color = '';
+                loadingElement.style.backgroundColor = '';
+                loadingElement.style.padding = '';
+            }, 3000);
         }
+
+        // Function to create and display alerts
+        function showAlert(type, message, title) {
+            const alertContainer = document.getElementById('alertContainer');
+            
+            // Clear previous alerts
+            alertContainer.innerHTML = '';
+            
+            // Create alert element
+            const alertDiv = document.createElement('div');
+            
+            // Set alert styles based on type
+            if (type === 'processing') {
+                alertDiv.className = 'alert processing';
+                alertDiv.innerHTML = `
+                    <div class="alert-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14v-4c0-1.1.9-2 2-2h4V5l5 5-5 5h-4z"/>
+                        </svg>
+                    </div>
+                    <div class="alert-content">
+                        <h4>${title || 'Processing'}</h4>
+                        <p>${message || 'Your files are being processed. Please wait.'}</p>
+                    </div>
+                `;
+            } else if (type === 'success') {
+                alertDiv.className = 'alert success';
+                alertDiv.innerHTML = `
+                    <div class="alert-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                            <polyline points="22 4 12 14.01 9 11.01"/>
+                        </svg>
+                    </div>
+                    <div class="alert-content">
+                        <h4>${title || 'Success'}</h4>
+                        <p>${message || 'Files processed successfully.'}</p>
+                    </div>
+                `;
+            } else if (type === 'error') {
+                alertDiv.className = 'alert error';
+                alertDiv.innerHTML = `
+                    <div class="alert-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"/>
+                            <line x1="12" y1="8" x2="12" y2="12"/>
+                            <line x1="12" y1="16" x2="12.01" y2="16"/>
+                        </svg>
+                    </div>
+                    <div class="alert-content">
+                        <h4>${title || 'Error'}</h4>
+                        <p>${message || 'An unexpected error occurred.'}</p>
+                    </div>
+                `;
+            }
+            
+            // Add alert to container
+            alertContainer.appendChild(alertDiv);
+            
+            // Optional: Auto-remove after 5 seconds
+            setTimeout(() => {
+                alertContainer.innerHTML = '';
+            }, 8000);
+        }
+
+
 
         async function processFiles() {
             const findText = document.getElementById('findInput').value;
@@ -582,32 +738,29 @@
                     second: '2-digit',
                     hour12: false
                 }).replace(/[/:\s]/g, '');
-
+                console.log(response);
+                console.log(result);
+                // Trigger download directly
                 const url = URL.createObjectURL(result);
                 const link = document.createElement('a');
                 link.href = url;
                 link.download = `processed_files_${timestamp}.zip`;
-
-                // Trigger download
-                document.body.appendChild(link);
                 link.click();
 
-                // Clean up
-                document.body.removeChild(link);
-                URL.revokeObjectURL(url);
-
+                // Show success alert
+                showAlert('success');
                 showLoading(false);
 
-                // Optional: Show success message
-                alert('Files processed and downloaded successfully!');
+                // Clean up
+                URL.revokeObjectURL(url);
 
                 // Clear input fields and file list
                 resetForm();
 
-            } catch (error) {
-                console.error('Error processing files:', error);
-                alert('An error occurred during file processing');
-                showLoading(false);
+            }catch (error) {
+                console.error('Error processing files:', error);                
+                // Show error alert
+                showAlert('error', error.message);
             }
         }
 
@@ -621,6 +774,18 @@
             document.getElementById('matchCountSection').style.display = 'none';
             document.getElementById('processBtn').disabled = true;
             document.getElementById('processBtn').classList.remove('has-matches');
+        }
+
+        function debounce(func, delay) {
+            let timeoutId;
+            return function() {
+                const context = this;
+                const args = arguments;
+                clearTimeout(timeoutId);
+                timeoutId = setTimeout(() => {
+                    func.apply(context, args);
+                }, delay);
+            };
         }
 
         // Create a pool of web workers based on available CPU cores
@@ -834,6 +999,13 @@
             }
         }
 
+        function resetMatchCount() {
+            document.getElementById('matchCount').innerText = '0';
+            document.getElementById('matchCountSection').style.display = 'none';
+            document.getElementById('processBtn').disabled = true;
+            document.getElementById('processBtn').classList.remove('has-matches');
+        }
+
         document.getElementById('processBtn').addEventListener('click', function() {
             const findText = document.getElementById('findInput').value;
             const replaceText = document.getElementById('replaceInput').value;
@@ -852,6 +1024,27 @@
         });
 
         document.addEventListener('DOMContentLoaded', () => {
+            const findInput = document.getElementById('findInput');
+            const findBtn = document.getElementById('findBtn');
+            const filesList = document.getElementById('filesList');
+
+            // Function to check if the find button should be enabled
+            function updateFindButtonState() {
+                const hasFindText = findInput.value.trim() !== '';
+                const hasFiles = uploadedFiles.size > 0;
+                findBtn.disabled = !(hasFindText && hasFiles);
+            }
+
+            // Initial check to disable the button if the input is empty or no files are added
+            updateFindButtonState();
+
+            // Add event listener to the input field
+            findInput.addEventListener('input', updateFindButtonState);
+
+            // Add event listener to the file list to update the button state when files are added or removed
+            const observer = new MutationObserver(updateFindButtonState);
+            observer.observe(filesList, { childList: true });
+
             const landingPage = document.getElementById('landingPage');
             const startProcessingBtn = document.getElementById('startProcessingBtn');
 
@@ -870,8 +1063,7 @@
             }
         });
 
-        // Automatically call countMatchesInFiles whenever findInput value changes
-        document.getElementById('findInput').addEventListener('input', countMatchesInFiles);
+
     </script>
     <!-- Include the SheetJS library at the end with defer -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.1/xlsx.full.min.js" defer></script>

@@ -161,6 +161,7 @@ impl From<ZipError> for CustomZipError {
     }
 }
 
+
 async fn process_file(
     file_path: PathBuf,
     original_filename: String,
@@ -173,8 +174,6 @@ async fn process_file(
 
     let timestamp = Local::now().format("%m%d%y%H%M%S");
     let original_stem = Path::new(&original_filename).file_stem().unwrap_or_default().to_string_lossy().to_string();
-    let new_filename = format!("{}Replace0-{}.xlsx", original_stem, timestamp);
-    let _processed_path = temp_dir.path().join(&new_filename);
 
     let mut xlsx_workbook = Workbook::new();
     let worksheet = xlsx_workbook.add_worksheet();
@@ -183,8 +182,11 @@ async fn process_file(
 
     let default_format = Format::new();
     let red_format = Format::new().set_font_color(Color::Red).set_bold();
+    let date_format = Format::new().set_num_format_index(22);
 
+    // Detect original cell formats if needed
     let mut headers_found = false;
+
     for (row_idx, row) in sheet.rows().enumerate() {
         if headers_found {
             break;
@@ -192,34 +194,36 @@ async fn process_file(
         for (col_idx, cell) in row.iter().enumerate() {
             match cell {
                 DataType::String(s) => {
-                    if s.contains(&*find_text) {
+                    let original_str = s.trim();
+    
+                    if original_str.contains(&*find_text) {
                         total_replacements += 1;
-
-                        let parts = split_and_replace(s, &find_text, &replace_text);
+    
+                        let parts = split_and_replace(original_str, &find_text, &replace_text);
                         let mut rich_text: Vec<(&Format, &str)> = Vec::new();
                         for part in &parts {
                             let format = if part.is_replaced { &red_format } else { &default_format };
                             rich_text.push((format, part.text.as_str()));
                         }
-
+    
                         worksheet.write_rich_string(row_idx as u32, col_idx as u16, &rich_text)?;
                     } else {
-                        worksheet.write_string(row_idx as u32, col_idx as u16, s.trim())?;
+                        worksheet.write_string(row_idx as u32, col_idx as u16, original_str)?;
                     }
-
+    
                     // Check if the cell contains a header
-                    if s.trim().to_lowercase().contains("header") {
+                    if original_str.to_lowercase().contains("header") {
                         headers_found = true;
                     }
+                },
+                DataType::DateTime(dt) => {
+                    worksheet.write_string(row_idx as u32, col_idx as u16, &dt.to_string())?;
                 },
                 DataType::Float(n) => {
                     worksheet.write_number(row_idx as u32, col_idx as u16, *n)?;
                 },
                 DataType::Int(n) => {
                     worksheet.write_number(row_idx as u32, col_idx as u16, *n as f64)?;
-                },
-                DataType::DateTime(dt) => {
-                    worksheet.write_string(row_idx as u32, col_idx as u16, &dt.to_string())?;
                 },
                 _ => {
                     worksheet.write_string(row_idx as u32, col_idx as u16, "")?;
@@ -228,7 +232,13 @@ async fn process_file(
         }
     }
 
-    let final_filename = format!("{}Replace{}-{}.xlsx", original_stem, total_replacements, timestamp);
+    // Determine the filename based on replacements
+    let final_filename = if total_replacements > 0 {
+        format!("{}Replace{}-{}.xlsx", original_stem, total_replacements, timestamp)
+    } else {
+        format!("{}.xlsx", original_stem)
+    };
+
     let final_processed_path = temp_dir.path().join(&final_filename);
 
     xlsx_workbook.save(&final_processed_path)?;
@@ -238,6 +248,9 @@ async fn process_file(
         filename: final_filename,
     })
 }
+
+
+
 
 async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
     let temp_dir = TempDir::new()?;
@@ -339,6 +352,8 @@ async fn process_excel(mut payload: Multipart) -> Result<HttpResponse> {
         .append_header(("X-Total-Replacements", processing_result_batch.total_replaced_count.to_string()))
         .body(zip_buffer))
 }
+
+
 
 async fn swagger_ui_handler(req: HttpRequest) -> HttpResponse {
     let path = req.match_info().get("tail").unwrap_or("");
